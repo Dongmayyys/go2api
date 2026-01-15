@@ -210,7 +210,25 @@ async def normalize_gemini_request(
             # includeThoughts 使用配置值
             thinking_config["includeThoughts"] = return_thoughts
 
-        # 2. 搜索模型添加 Google Search
+        # 2. maxthinking 模式：在最新用户消息前注入 /think 指令
+        # 这样可以双重保障模型每轮都会思考，避免"偷懒"
+        if "-maxthinking" in model:
+            contents = result.get("contents", [])
+            if contents:
+                # 从后往前找最后一条 user 消息
+                for i in range(len(contents) - 1, -1, -1):
+                    content = contents[i]
+                    if isinstance(content, dict) and content.get("role") == "user":
+                        parts = content.get("parts", [])
+                        if parts and isinstance(parts[0], dict) and "text" in parts[0]:
+                            original_text = parts[0]["text"]
+                            # 只有当消息不是以 /think 开头时才注入
+                            if not original_text.startswith("/think"):
+                                parts[0]["text"] = "/think\n" + original_text
+                                log.debug(f"[GEMINICLI] maxthinking 模式：已在最新用户消息前注入 /think 指令")
+                        break
+
+        # 3. 搜索模型添加 Google Search
         if is_search_model(model):
             result_tools = result.get("tools") or []
             result["tools"] = result_tools
