@@ -220,12 +220,11 @@ async def normalize_gemini_request(
                     content = contents[i]
                     if isinstance(content, dict) and content.get("role") == "user":
                         parts = content.get("parts", [])
-                        if parts and isinstance(parts[0], dict) and "text" in parts[0]:
-                            original_text = parts[0]["text"]
-                            # 只有当消息不是以 /think 开头时才注入
-                            if not original_text.startswith("/think"):
-                                parts[0]["text"] = "/think\n" + original_text
-                                log.debug(f"[GEMINICLI] maxthinking 模式：已在最新用户消息前注入 /think 指令")
+                        
+                        # 直接插入独立 Part (无需检测，假设用户不会手动输入冲突指令)
+                        if parts is not None:
+                            parts.insert(0, {"text": "/think\n<user_input_start>"})
+                            log.debug(f"[GEMINICLI] maxthinking 模式：已在最新用户消息前插入独立 /think Part (带Tag)")
                         break
 
         # 3. 搜索模型添加 Google Search
