@@ -263,10 +263,11 @@ async def stream_generate_content(
 
     # ========== 流式抗截断生成器 ==========
     async def anti_truncation_generator():
-        from src.converter.gemini_fix import normalize_gemini_request
+        from src.converter.gemini_fix import normalize_gemini_request, is_time_injection_model
         from src.converter.anti_truncation import AntiTruncationStreamProcessor
         from src.converter.anti_truncation import apply_anti_truncation
         from src.api.geminicli import stream_request
+        from datetime import datetime
 
         # 先进行基础标准化
         normalized_req = await normalize_gemini_request(normalized_dict.copy(), mode="geminicli")
@@ -276,6 +277,10 @@ async def stream_generate_content(
             "model": normalized_req.pop("model") if "model" in normalized_req else real_model,
             "request": normalized_req
         }
+        
+        # 检查是否需要注入时间戳（持久化到模型回复）
+        should_inject_time = is_time_injection_model(model)
+        time_injected = False
 
         max_attempts = await get_anti_truncation_max_attempts()
 
@@ -312,16 +317,42 @@ async def stream_generate_content(
                     try:
                         # 解析JSON
                         data = json.loads(json_str)
+                        final_data = data
 
                         # 展开 response 包装
                         if "response" in data and "candidates" not in data:
                             log.debug(f"[GEMINICLI-ANTI-TRUNCATION] 展开response包装")
-                            unwrapped_data = data["response"]
-                            # 重新构建SSE格式
-                            yield f"data: {json.dumps(unwrapped_data, ensure_ascii=False)}\n\n".encode('utf-8')
+                            final_data = data["response"]
+                            
+                        # 时间戳注入逻辑
+                        if should_inject_time and not time_injected:
+                            candidates = final_data.get("candidates", [])
+                            if candidates and isinstance(candidates, list):
+                                if len(candidates) > 0 and isinstance(candidates[0], dict):
+                                    content = candidates[0].get("content", {})
+                                    parts = content.get("parts", [])
+                                    if parts and isinstance(parts, list):
+                                        if len(parts) > 0 and isinstance(parts[0], dict):
+                                            first_part = parts[0]
+                                            text = first_part.get("text", "")
+                                            # 检查是否为 thinking 块
+                                            is_thought = first_part.get("thought", False) is True or "thought" in first_part
+                                            
+                                            # 只有当 text 存在且不是 thinking 时才注入
+                                            if text is not None and not is_thought: 
+                                                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                                time_prefix = f"[{current_time}]\n"
+                                                parts[0]["text"] = time_prefix + text
+                                                time_injected = True
+                                                log.debug(f"[GEMINICLI] 已在模型正文回复开头注入时间戳: {time_prefix.strip()}")
+                        
+                        # 如果修改了数据（展开包装或注入时间戳），重新序列化
+                        if final_data is not data or time_injected:
+                             yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n".encode('utf-8')
                         else:
-                            # 已经是展开的格式，直接返回
-                            yield chunk
+                             # 已经是展开的格式，直接返回
+                             yield chunk
+
                     except json.JSONDecodeError:
                         # JSON解析失败，直接返回原始chunk
                         yield chunk
@@ -334,9 +365,10 @@ async def stream_generate_content(
 
     # ========== 普通流式生成器 ==========
     async def normal_stream_generator():
-        from src.converter.gemini_fix import normalize_gemini_request
+        from src.converter.gemini_fix import normalize_gemini_request, is_time_injection_model
         from src.api.geminicli import stream_request
         from fastapi import Response
+        from datetime import datetime
 
         normalized_req = await normalize_gemini_request(normalized_dict.copy(), mode="geminicli")
 
@@ -345,6 +377,11 @@ async def stream_generate_content(
             "model": normalized_req.pop("model"),
             "request": normalized_req
         }
+        
+        # 检查是否需要注入时间戳（持久化到模型回复）
+        # 注意：这里用原始 model 变量，因为 normalized_req 里的 model 已经是基础名了
+        should_inject_time = is_time_injection_model(model)
+        time_injected = False
 
         # 所有流式请求都使用非 native 模式（SSE格式）并展开 response 包装
         log.debug(f"[GEMINICLI] 使用非native模式，将展开response包装")
@@ -377,16 +414,45 @@ async def stream_generate_content(
                     try:
                         # 解析JSON
                         data = json.loads(json_str)
+                        final_data = data
 
                         # 展开 response 包装
                         if "response" in data and "candidates" not in data:
                             log.debug(f"[GEMINICLI] 展开response包装")
-                            unwrapped_data = data["response"]
-                            # 重新构建SSE格式
-                            yield f"data: {json.dumps(unwrapped_data, ensure_ascii=False)}\n\n".encode('utf-8')
+                            final_data = data["response"]
+                        
+                        # 时间戳注入逻辑
+                        if should_inject_time and not time_injected:
+                            candidates = final_data.get("candidates", [])
+                            if candidates and isinstance(candidates, list):
+                                # Ensure candidates[0] exists and is a dict
+                                if len(candidates) > 0 and isinstance(candidates[0], dict):
+                                    content = candidates[0].get("content", {})
+                                    parts = content.get("parts", [])
+                                    if parts and isinstance(parts, list):
+                                        # Ensure parts[0] exists and is a dict
+                                        if len(parts) > 0 and isinstance(parts[0], dict):
+                                            first_part = parts[0]
+                                            text = first_part.get("text", "")
+                                            # 检查是否为 thinking 块 (thought=True 或包含 thought 字段)
+                                            # 注意：有些实现可能把 thought 直接放在 part 根级
+                                            is_thought = first_part.get("thought", False) is True or "thought" in first_part
+                                            
+                                            # 只有当 text 存在且不是 thinking 时才注入
+                                            if text is not None and not is_thought: 
+                                                current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                                time_prefix = f"[{current_time}]\n"
+                                                parts[0]["text"] = time_prefix + text
+                                                time_injected = True
+                                                log.debug(f"[GEMINICLI] 已在模型正文回复开头注入时间戳: {time_prefix.strip()}")
+                        
+                        # 如果修改了数据（展开包装或注入时间戳），重新序列化
+                        if final_data is not data or time_injected: # 只要数据变了
+                             yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n".encode('utf-8')
                         else:
-                            # 已经是展开的格式，直接返回
-                            yield chunk
+                             # 已经是展开的格式且没注入，直接返回
+                             yield chunk
+
                     except json.JSONDecodeError:
                         # JSON解析失败，直接返回原始chunk
                         yield chunk
