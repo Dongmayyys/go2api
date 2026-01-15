@@ -132,13 +132,6 @@ def get_available_models(router_type: str = "openai") -> List[str]:
             models.append(f"假流式/{base_model}{combined_suffix}")
             models.append(f"流式抗截断/{base_model}{combined_suffix}")
 
-        # 4. maxthinking + time 组合后缀 (新增)
-        time_suffix = "-time"
-        combined_time_suffix = f"-maxthinking{time_suffix}"
-        models.append(f"{base_model}{combined_time_suffix}")
-        models.append(f"假流式/{base_model}{combined_time_suffix}")
-        models.append(f"流式抗截断/{base_model}{combined_time_suffix}")
-
     return models
 
 

@@ -66,7 +66,7 @@ def prepare_image_generation_request(
 def get_base_model_name(model_name: str) -> str:
     """移除模型名称中的后缀,返回基础模型名"""
     # 按照从长到短的顺序排列，避免 -think 先于 -maxthinking 被匹配
-    suffixes = ["-maxthinking", "-nothinking", "-search", "-think", "-time"]
+    suffixes = ["-maxthinking", "-nothinking", "-search", "-think"]
     result = model_name
     changed = True
     # 持续循环直到没有任何后缀可以移除
@@ -104,10 +104,6 @@ def get_thinking_settings(model_name: str) -> tuple[Optional[int], bool]:
 def is_search_model(model_name: str) -> bool:
     """检查是否为搜索模型"""
     return "-search" in model_name
-
-def is_time_injection_model(model_name: str) -> bool:
-    """检查是否为时间注入模型"""
-    return "-time" in model_name
 
 
 # ==================== 统一的 Gemini 请求后处理 ====================
@@ -176,7 +172,6 @@ async def normalize_gemini_request(
     """
     # 导入配置函数
     from config import get_return_thoughts_to_frontend
-    from datetime import datetime
 
     result = request.copy()
     model = result.get("model", "")
@@ -215,28 +210,7 @@ async def normalize_gemini_request(
             # includeThoughts 使用配置值
             thinking_config["includeThoughts"] = return_thoughts
 
-        # 2. time 模式：在最新用户消息前注入当前时间戳
-        # 格式：[当前时间: YYYY-MM-DD HH:MM:SS]
-        if is_time_injection_model(model):
-            contents = result.get("contents", [])
-            if contents:
-                # 从后往前找最后一条 user 消息
-                for i in range(len(contents) - 1, -1, -1):
-                    content = contents[i]
-                    if isinstance(content, dict) and content.get("role") == "user":
-                        parts = content.get("parts", [])
-                        if parts and isinstance(parts[0], dict) and "text" in parts[0]:
-                            original_text = parts[0]["text"]
-                            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            time_prefix = f"[{current_time}]\n"
-                            
-                            # 避免重复注入
-                            if not original_text.startswith("[") or "]" not in original_text[:25]:
-                                parts[0]["text"] = time_prefix + original_text
-                                log.debug(f"[GEMINICLI] time 模式：已在最新用户消息前注入时间戳: {time_prefix.strip()}")
-                        break
-
-        # 3. maxthinking 模式：在最新用户消息前注入 /think 指令
+        # 2. maxthinking 模式：在最新用户消息前注入 /think 指令
         # 这样可以双重保障模型每轮都会思考，避免"偷懒"
         if "-maxthinking" in model:
             contents = result.get("contents", [])
@@ -254,7 +228,7 @@ async def normalize_gemini_request(
                                 log.debug(f"[GEMINICLI] maxthinking 模式：已在最新用户消息前注入 /think 指令")
                         break
 
-        # 4. 搜索模型添加 Google Search
+        # 3. 搜索模型添加 Google Search
         if is_search_model(model):
             result_tools = result.get("tools") or []
             result["tools"] = result_tools
